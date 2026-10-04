@@ -2,9 +2,13 @@
 
 | Component | Version | Last Updated |
 |-----------|---------|--------------|
-| google-workspace-mcp-cli | 0.2.1 | 2026-09-27 |
+| google-workspace-mcp-cli | 0.2.2 | 2026-10-04 |
 
 ---
+
+## 0.2.2, 2026-10-04
+
+- **`npx -y @thenavidm/google-workspace-mcp-cli` always starts the MCP server.** npx starts whichever binary the npm registry lists first when they share one file, and the registry does not keep the published order, so an MCP client set up with this README's install line could get `google-workspace-cli` and its command list instead of a server. A third binary named after the package now always starts the server, and npx picks it by name.
 
 ## 0.2.1
 
