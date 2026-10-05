@@ -37,4 +37,4 @@ jobs:
         run: |
           node dist/index.js --version
           ln -s "$PWD/dist/index.js" google-workspace-cli
-          node google-workspace-cli | grep -q "google-workspace-cli commands (38)"
+          node google-workspace-cli | grep -q "38 commands"
