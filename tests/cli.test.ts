@@ -1,101 +1,155 @@
 /**
- * The CLI bridge (src/cli.ts, copied from dev:mcp-cli assets/cli-bridge.ts).
+ * The server and CLI, now built by Slipway from the same tools.
  *
- * The bridge reads the real server's tools/list, so the tests that count are
- * the ones over that list: every tool routes, every schema turns into flags,
- * and every required key is a required flag. The rest cover the argv shapes a
- * person types and the exit-code contract.
+ * Parsing, help and output shapes are Slipway's and tested there. These cover
+ * what this repo promises: every tool is a command, GWS_SERVICES still picks
+ * the services, the irreversible calls ask first in 0.2's words, the gws CLI's
+ * failures keep useful exit codes, and the docs stay in step with the code.
+ * A fake gws stands in for Google's, so nothing leaves the machine.
  */
 
-import { describe, expect, it } from "vitest";
-import { EXIT, exitCodeFor, flagsFor, isCliCommand, listTools, parseArgs } from "../src/cli.js";
+import { spawnSync } from "node:child_process"
+import { chmodSync, existsSync, readdirSync, readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
+import { checkApp, cli, connect } from "@thenavidm/slipway/testing"
+import { app } from "../src/app.js"
+import { TOOLS } from "../src/tools/index.js"
 
-const schema = {
-  type: "object",
-  properties: {
-    text: { type: "string", description: "The body." },
-    limit: { type: "integer" },
-    confirm: { type: "boolean" },
-    tags: { type: "array", items: { type: "string" } },
-    filter: { type: "object" },
-    mode: { type: "string", enum: ["fast", "slow"] },
-    maybe: { anyOf: [{ type: "number" }, { type: "null" }] },
-  },
-  required: ["text"],
-};
+const fake = fileURLToPath(new URL("./fixtures/fake-gws.mjs", import.meta.url))
+beforeAll(() => chmodSync(fake, 0o755))
+afterEach(() => vi.unstubAllEnvs())
 
-describe("flags from the JSON Schema an MCP app receives", () => {
-  const flags = flagsFor(schema);
-  const by = (key: string) => flags.find((f) => f.key === key);
+/** Runs the CLI with the fake gws, and its exit code if one is given. */
+async function run(args: string[], exit?: number, stderr?: string) {
+  vi.stubEnv("GWS_BIN", fake)
+  if (exit) vi.stubEnv("FAKE_GWS_EXIT", String(exit))
+  if (stderr) vi.stubEnv("FAKE_GWS_STDERR", stderr)
+  return cli(app, args, { env: {} })
+}
 
-  it("kebab-cases each key and carries its description", () => {
-    expect(by("text")).toMatchObject({ flag: "--text", kind: "string", required: true, help: "The body." });
-  });
+describe("Workspace on Slipway", () => {
+  it("makes all 38 tools commands, the four irreversible ones needing confirmation", async () => {
+    const context = JSON.parse((await cli(app, ["agent-context", "--brief"], { env: {} })).stdout)
+    const commands = context.commands as Array<{ command: string; requires_confirm?: boolean }>
+    expect(commands.map((c) => c.command).sort()).toEqual(TOOLS.map((tool) => tool.name.replace(/_/g, "-")).sort())
+    expect(commands).toHaveLength(38)
+    expect(commands.filter((c) => c.requires_confirm).map((c) => c.command).sort()).toEqual(
+      ["calendar-delete-event", "drive-trash", "gmail-send-draft", "workspace-raw"],
+    )
+  })
 
-  it("reads the kind of every property", () => {
-    expect(by("limit")?.kind).toBe("integer");
-    expect(by("confirm")?.kind).toBe("boolean");
-    expect(by("tags")).toMatchObject({ kind: "string", repeatable: true });
-    expect(by("filter")?.kind).toBe("json");
-    expect(by("mode")).toMatchObject({ kind: "enum", choices: ["fast", "slow"] });
-    expect(by("maybe")?.kind).toBe("number");
-  });
-});
+  it("shows only the services GWS_SERVICES names, and the two raw tools", async () => {
+    const mcp = await connect(app, { env: { GWS_SERVICES: "gmail,drive" } })
+    const names = (await mcp.listTools()).map((t) => t.name)
+    await mcp.close()
+    expect(names).toContain("gmail_search")
+    expect(names).toContain("drive_trash")
+    expect(names).toContain("workspace_raw")
+    expect(names).not.toContain("calendar_list_events")
+    expect(names).not.toContain("sheets_read")
+  })
 
-describe("parseArgs", () => {
-  const flags = flagsFor(schema);
+  it("hides every write under GWS_READ_ONLY=1, and keeps the raw tool for reads, as 0.2 did", async () => {
+    const readOnly = { env: { GWS_READ_ONLY: "1" } }
+    const mcp = await connect(app, readOnly)
+    const names = (await mcp.listTools()).map((t) => t.name)
+    await mcp.close()
+    expect(names).toContain("gmail_search")
+    expect(names).not.toContain("gmail_create_draft")
+    expect(names).toContain("workspace_raw")
+    vi.stubEnv("GWS_BIN", fake)
+    expect((await cli(app, ["workspace-raw", "--service", "drive", "--path", "files", "--path", "list", "--agent"], readOnly)).code).toBe(0)
+    const write = await cli(app, ["workspace-raw", "--service", "drive", "--path", "files", "--path", "create", "--body", '{"name":"x"}', "--agent"], readOnly)
+    expect(write.code).toBe(2)
+    expect(JSON.parse(write.stderr).error).toMatch(/^workspace_raw only reads while this server is running with GWS_READ_ONLY=1, and this call writes/)
+    const del = await cli(app, ["workspace-raw", "--service", "drive", "--path", "files", "--path", "delete", "--confirm", "--agent"], readOnly)
+    expect(del.code).toBe(2)
+  })
 
-  it("accepts --flag value, --flag=value and the underscore spelling", () => {
-    expect(parseArgs(["--text", "hi"], flags)).toEqual({ text: "hi" });
-    expect(parseArgs(["--text=hi"], flags)).toEqual({ text: "hi" });
-    expect(parseArgs(["--text", "hi", "--mode", "fast"], flags)).toEqual({ text: "hi", mode: "fast" });
-  });
+  it("finds the command for a task described in words", async () => {
+    const first = async (...words: string[]) => (await cli(app, ["which", ...words], { env: {} })).stdout.split("\n")[0]
+    expect(await first("send", "a", "draft")).toContain("gmail-send-draft")
+    expect(await first("append", "rows", "to", "a", "sheet")).toContain("sheets-append")
+  })
 
-  it("treats a boolean as a switch and collects a repeatable flag", () => {
-    expect(parseArgs(["--text", "hi", "--confirm", "--tags", "a", "--tags", "b"], flags)).toEqual({ text: "hi", confirm: true, tags: ["a", "b"] });
-  });
+  it("passes a read to gws as arguments, never through a shell", async () => {
+    const out = await run(["gmail-search", "--q", "from:sarah; rm -rf /", "--agent"])
+    expect(out.code).toBe(0)
+    expect(JSON.parse(out.stdout).called.slice(0, 3)).toEqual(["gmail", "users", "messages"])
+    expect(JSON.parse(out.stdout).called).toContain(JSON.stringify({ userId: "me", q: "from:sarah; rm -rf /", maxResults: 25 }))
+  })
 
-  it("fills the first required flag from a bare argument", () => {
-    expect(parseArgs(["hello"], flags)).toEqual({ text: "hello" });
-  });
+  it("refuses to send a draft without --confirm, in 0.2's words, and sends it with it", async () => {
+    const refused = await run(["gmail-send-draft", "--draft-id", "d1", "--agent"])
+    expect(refused.code).toBe(2)
+    expect(JSON.parse(refused.stderr).error).toBe(
+      "gmail_send_draft sends the email, which cannot be recalled, so it will not run without --confirm. About to: send draft d1. Call again with --confirm if that is what was asked for.",
+    )
+    expect((await run(["gmail-send-draft", "--draft-id", "d1", "--confirm", "--agent"])).code).toBe(0)
+  })
 
-  it("refuses what it cannot use", () => {
-    expect(() => parseArgs(["--nope", "x"], flags)).toThrow(/Unknown option/);
-    expect(() => parseArgs(["--text", "hi", "--limit", "1.5"], flags)).toThrow(/whole number/);
-    expect(() => parseArgs(["--text", "hi", "--mode", "medium"], flags)).toThrow(/one of/);
-    expect(() => parseArgs(["--text", "hi", "--filter", "{oops"], flags)).toThrow(/JSON/);
-    expect(() => parseArgs([], flags)).toThrow(/Missing --text/);
-  });
-});
+  it("asks for --confirm on a raw delete, and not on a raw read", async () => {
+    expect((await run(["workspace-raw", "--service", "drive", "--path", "files", "--path", "list", "--agent"])).code).toBe(0)
+    const del = await run(["workspace-raw", "--service", "drive", "--path", "files", "--path", "delete", "--agent"])
+    expect(del.code).toBe(2)
+    expect(JSON.parse(del.stderr).error).toMatch(/^workspace_raw looks like a delete/)
+  })
 
-describe("exit codes follow the house contract", () => {
-  it("maps the generic words", () => {
-    expect(exitCodeFor("MCP error -32602: Input validation error: Invalid arguments")).toBe(EXIT.usage);
-    expect(exitCodeFor("Not deleting. Call again with confirm: true once you are sure.")).toBe(EXIT.usage);
-    expect(exitCodeFor("Too many requests, slow down (429)")).toBe(EXIT.rateLimited);
-    expect(exitCodeFor("Nothing is configured. Run `login` first.")).toBe(EXIT.config);
-    expect(exitCodeFor("Request had invalid authentication credentials (401)")).toBe(EXIT.auth);
-    expect(exitCodeFor("That resource was not found (404)")).toBe(EXIT.notFound);
-    expect(exitCodeFor("Upstream answered 502")).toBe(EXIT.api);
-  });
-});
+  it("gives the gws CLI's failures exit codes a script can act on", async () => {
+    expect((await run(["gmail-list-labels", "--agent"], 2, "not signed in")).code).toBe(10)
+    expect((await run(["gmail-list-labels", "--agent"], 3, "bad params")).code).toBe(2)
+    expect((await run(["gmail-list-labels", "--agent"], 1, "Google said no")).code).toBe(5)
+    vi.stubEnv("GWS_BIN", "/nonexistent/gws")
+    const missing = await cli(app, ["gmail-list-labels", "--agent"], { env: {} })
+    expect(missing.code).toBe(10)
+    expect(JSON.parse(missing.stderr).error).toMatch(/gws` CLI was not found/)
+  })
 
-describe("parity with the real server", () => {
-  it("routes every tool in both spellings, and builds flags for every schema", async () => {
-    const tools = await listTools();
-    expect(tools.length).toBeGreaterThan(0);
-    const names = tools.map((t) => t.name);
-    for (const tool of tools) {
-      expect(isCliCommand([tool.name], names)).toBe(true);
-      expect(isCliCommand([tool.name.replace(/_/g, "-")], names)).toBe(true);
-      const flags = flagsFor(tool.inputSchema);
-      expect(flags).toHaveLength(Object.keys(tool.inputSchema.properties ?? {}).length);
-      for (const key of tool.inputSchema.required ?? []) expect(flags.find((f) => f.key === key)?.required).toBe(true);
-    }
-  });
+  it("refuses --http without a bearer token, even on this machine, as 0.2 did", () => {
+    const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url))
+    if (!existsSync(entry)) return // CI builds before it tests; a bare checkout has no dist yet.
+    const run = spawnSync(process.execPath, [entry, "--http"], { env: { PATH: process.env.PATH, HOME: "/nonexistent" }, encoding: "utf8" })
+    expect(run.status).toBe(10)
+    expect(run.stderr).toMatch(/GWS_HTTP_TOKEN is not set/)
+  })
 
-  it("leaves the server's own flags alone", () => {
-    expect(isCliCommand(["--http"], ["x"])).toBe(false);
-    expect(isCliCommand([], ["x"])).toBe(false);
-  });
-});
+  it("passes slipway check", async () => {
+    const report = await checkApp(app, { env: {} })
+    expect(report.findings.filter((finding) => finding.level === "error")).toEqual([])
+  })
+})
+
+describe("documentation stays in step with the code", () => {
+  const read = (p: string): string => readFileSync(new URL(p, import.meta.url), "utf-8")
+  const names = (text: string): Set<string> => new Set((text.match(/GWS_[A-Z_]+/g) ?? []).filter((name) => !name.endsWith("_")))
+  const source = (dir: string): string =>
+    readdirSync(new URL(dir, import.meta.url), { withFileTypes: true })
+      .map((entry) => (entry.isDirectory() ? source(`${dir}${entry.name}/`) : entry.name.endsWith(".ts") ? read(`${dir}${entry.name}`) : ""))
+      .join("\n")
+
+  /** Every variable the server reads: this repo's code, and Slipway's as agent-context lists them. */
+  const used = async (): Promise<Set<string>> => {
+    const context = JSON.parse((await cli(app, ["agent-context"], { env: {} })).stdout)
+    return new Set([...names(source("../src/")), ...context.settings.map((setting: { env: string }) => setting.env)])
+  }
+
+  it("documents every environment variable the code reads", async () => {
+    const documented = names(read("../README.md"))
+    expect([...(await used())].filter((v) => !documented.has(v))).toEqual([])
+  })
+
+  it.each(["../README.md", "../INSTALL.md"])("has no dead in-page anchors in %s", (file) => {
+    if (!existsSync(new URL(file, import.meta.url))) return
+    const md = read(file).replace(/```[\s\S]*?```/g, "")
+    // GitHub's slug keeps letters, marks, numbers and connector punctuation, so an
+    // emoji's variation selector (U+FE0F) stays in the anchor and a link has to carry it.
+    const slugs = new Set(
+      [...md.matchAll(/^#{1,6} (.+)$/gm)].map(([, heading]) =>
+        (heading as string).trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\s-]/gu, "").replace(/ /g, "-"),
+      ),
+    )
+    const dead = [...md.matchAll(/\[[^\]]+\]\(#([^)]+)\)/g)].map((m) => decodeURIComponent(m[1] as string)).filter((a) => !slugs.has(a))
+    expect(dead).toEqual([])
+  })
+})

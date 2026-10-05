@@ -22,7 +22,8 @@ const run = promisify(execFile)
    picking from 400 picks badly, and the list is re-sent on every turn. So the
    tools in src/tools are a curated subset, and `workspace_raw` below is the
    escape hatch for the rest. */
-export const GWS_BIN = process.env.GWS_BIN?.trim() || "gws"
+/** The gws binary: GWS_BIN, or `gws` on the PATH. Read per call, so a test or a client's env can point it elsewhere. */
+export const gwsBin = (): string => process.env.GWS_BIN?.trim() || "gws"
 
 export class GwsError extends Error {
   constructor(message: string, readonly code: number, readonly stderr: string) {
@@ -72,7 +73,7 @@ export async function gws({ service, path, params, body, pageAll, pageLimit }: G
   }
 
   try {
-    const { stdout } = await run(GWS_BIN, args, {
+    const { stdout } = await run(gwsBin(), args, {
       maxBuffer: 32 * 1024 * 1024,
       timeout: 120_000,
       env: process.env,
@@ -106,8 +107,4 @@ export function allowedServices(): Set<string> | null {
   const raw = process.env.GWS_SERVICES?.trim()
   if (!raw) return null
   return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))
-}
-
-export function isReadOnly(): boolean {
-  return process.env.GWS_READ_ONLY === "1"
 }

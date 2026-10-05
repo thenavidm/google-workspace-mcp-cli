@@ -23,8 +23,8 @@ Contacts, through Google's own Workspace CLI.
 
 If the MCP server is connected, use the tools and ignore this section.
 
-Otherwise this skill drives the `google-workspace-cli` binary, and you must confirm it is
-there first:
+Otherwise this skill drives the `google-workspace-cli` binary. Confirm it is there
+first:
 
 ```bash
 google-workspace-cli --version
@@ -42,7 +42,7 @@ If `--version` still reports command not found, the install directory is not on
 
 ## Finding a command
 
-The CLI describes itself, so nothing here lists every tool and goes stale:
+The CLI describes itself:
 
 ```bash
 google-workspace-cli                    # every command, one line each
@@ -51,7 +51,7 @@ google-workspace-cli schema <command>   # the exact JSON Schema an MCP client re
 ```
 
 The command is the tool name with dashes, and the underscore spelling also
-works. `--agent` is JSON, compact, no prompts and no colour in one flag, and
+works. `--agent` is JSON, compact, no prompts and no color in one flag, and
 `--select a,b.c` keeps only the fields you name.
 
 ```bash
@@ -64,12 +64,13 @@ google-workspace-cli calendar-list-events --agent --select items.summary,items.s
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 2 | Usage: a missing or wrong argument, an unknown command, or a write refused for want of `--confirm` |
+| 1 | Unexpected error |
+| 2 | Usage: a missing or wrong argument (or one gws rejected), an unknown command, or a write refused for want of `--confirm` |
 | 3 | Not found |
 | 4 | Authentication: a credential was rejected or has expired |
 | 5 | Upstream failure |
 | 7 | Rate limited, wait and retry |
-| 10 | Nothing configured yet |
+| 10 | The gws CLI is missing or not signed in |
 
 Branch on these rather than reading the message.
 
@@ -82,7 +83,7 @@ or the call fails on a field you invented.
 ## Email: draft, then stop
 
 `gmail_create_draft` writes to Drafts and does not send. Sending is a separate
-tool needing `confirm: true`.
+tool that needs confirming.
 
 Draft the email, show the person what you wrote, and let them send it. Do not
 reach for `gmail_send_draft` unless they have seen the text and asked you to
@@ -91,13 +92,12 @@ send it.
 ## Reading files
 
 `drive_get_file` returns metadata only. To read what is actually inside a Doc,
-Sheet or Slide, use `drive_export` with `text/markdown` or `text/plain`. This
-catches people out constantly.
+Sheet or Slide, use `drive_export` with `text/markdown` or `text/plain`.
 
 ## Searching
 
-Gmail and Drive each have their own query syntax, and both are worth using
-properly rather than fetching everything and filtering.
+Gmail and Drive each have their own query syntax. Use it rather than fetching
+everything and filtering.
 
 ```
 gmail:  from:sarah newer_than:30d has:attachment is:unread

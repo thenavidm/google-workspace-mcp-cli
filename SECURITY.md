@@ -10,7 +10,7 @@ decide before installing rather than after.
 Two limits are built in rather than assumed:
 
 **Email is drafted, never sent silently.** `gmail_create_draft` writes to Drafts
-and stops. Sending is a separate tool that requires `confirm: true`.
+and stops. Sending is a separate tool that needs confirming: a person's approval over MCP, `--confirm` in a terminal.
 
 **Nothing is deleted permanently.** `drive_trash` moves a file to the trash,
 recoverable for 30 days. There is no permanent-delete tool.
@@ -37,9 +37,10 @@ does not exist there.
 
 ## The HTTP transport
 
-`--http` refuses to start without `GWS_MCP_TOKEN`, because the process holds
-full access to a Google account and an open port would hand that to anyone who
-found it. Bind it to loopback and put TLS in front. `deploy/install.sh` does
+`--http` refuses to start without `GWS_HTTP_TOKEN` (or 0.2's `GWS_MCP_TOKEN`),
+even on this machine, because the process holds full access to a Google account
+and an open port would hand that to anyone who found it. A page from another
+site is refused unless `GWS_HTTP_ALLOWED_ORIGINS` lists it. Bind it to loopback and put TLS in front. `deploy/install.sh` does
 both.
 
 ## Command construction

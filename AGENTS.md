@@ -18,16 +18,24 @@ able to become a command.
 **Email is drafted, not sent.** `gmail_create_draft` writes to Drafts and stops.
 Do not add a tool that composes and sends in one call, however convenient.
 
-**`confirm: true` only on what cannot be undone.** Sending email, deleting a
-calendar event, trashing a file. Not on labels, not on writes that can be
+**Confirmation only on what cannot be undone.** Sending email, deleting a
+calendar event, trashing a file, and a raw method that deletes. Slipway asks for
+it from the `DESTRUCTIVE` annotation, and `src/tools/kit.ts` holds each one's
+refusal words. Not on labels, not on writes that can be
 edited back. Requiring confirmation everywhere teaches the model to pass it
 reflexively, and then it passes it on the delete too.
 
 **No permanent delete.** `drive_trash` sets `trashed: true`. If someone asks for
 a hard delete, they can use `workspace_raw` and mean it.
 
-**`guard()` first, before any work.** It enforces `GWS_SERVICES` and
-`GWS_READ_ONLY`.
+**Built on Slipway.** `src/app.ts` describes the server; `src/tools/kit.ts`
+records each `registerTool` call and turns it into a Slipway tool in its
+service's toolset, so `GWS_SERVICES` picks the toolsets and Slipway hides the
+writes under `GWS_READ_ONLY`, keeping `workspace_raw` for its reads with
+`whenReadOnly: "reads"`.
+
+**`guard()` first, before any work.** It refuses a service `GWS_SERVICES` leaves
+out, which only `workspace_raw` can still name.
 
 ## The tool surface is curated on purpose
 
